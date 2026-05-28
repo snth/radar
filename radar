@@ -1,0 +1,61 @@
+#!/bin/sh
+
+# Exit immediately if no argument is provided
+if [ -z "$1" ]; then
+  echo "Usage: radar <user@domain> or radar <handle.bsky.social>" >&2
+  exit 1
+fi
+
+# 1. Normalise input (convert user@domain to user.domain)
+INPUT="$1"
+case "$INPUT" in
+*@*) HANDLE=$(echo "$INPUT" | sed 's/@/./') ;;
+*) HANDLE="$INPUT" ;;
+esac
+
+# Public Bluesky AppView endpoint
+PUBLIC_PDS="https://public.api.bsky.app"
+
+echo "📡 [RADAR] Scanning for $HANDLE..."
+
+# 2. Resolve Handle to DID
+# Fetches JSON and extracts the string inside "did":"..."
+RESOLVE_URL="$PUBLIC_PDS/xrpc/com.atproto.identity.resolveHandle?handle=$HANDLE"
+RESOLVE_RESP=$(curl -s "$RESOLVE_URL")
+
+DID=$(echo "$RESOLVE_RESP" | awk -F'"did":"' '{print $2}' | awk -F'"' '{print $1}')
+
+if [ -z "$DID" ] || [ "$DID" = "null" ]; then
+  echo "❌ Error: Could not resolve handle '$HANDLE'." >&2
+  exit 1
+fi
+
+# 3. Fetch the latest post (limit=1)
+FEED_URL="$PUBLIC_PDS/xrpc/app.bsky.feed.getAuthorFeed?actor=$DID&limit=1"
+FEED_RESP=$(curl -s "$FEED_URL")
+
+# 4. Extract data fields using basic string manipulation (POSIX safe)
+TEXT=$(echo "$FEED_RESP" | awk -F'"text":"' '{print $2}' | awk -F'","' '{print $1}' | sed 's/\\n/\
+/g' | sed 's/\\"/"/g')
+
+INDEXED_AT=$(echo "$FEED_RESP" | awk -F'"indexedAt":"' '{print $2}' | awk -F'"' '{print $1}')
+DISPLAY_NAME=$(echo "$FEED_RESP" | awk -F'"displayName":"' '{print $2}' | awk -F'"' '{print $1}')
+
+# Fallback to handle if display name is empty
+if [ -z "$DISPLAY_NAME" ]; then
+  DISPLAY_NAME="$HANDLE"
+fi
+
+# 5. Output in classic "Finger" layout
+if [ -z "$TEXT" ]; then
+  echo "📡 [RADAR SCREEN] $DISPLAY_NAME (@$HANDLE) has no recent public posts."
+else
+  printf "\n📡 [RADAR SCREEN]\n"
+  printf "User:        %s (@%s)\n" "$DISPLAY_NAME" "$HANDLE"
+  printf "Status:      Active\n"
+  printf "Last Seen:   %s\n" "$INDEXED_AT"
+  printf "%s\n" "--------------------------------------------------"
+  printf "%s\n" "$TEXT"
+  printf "%s\n" "--------------------------------------------------"
+  printf "\n"
+fi
